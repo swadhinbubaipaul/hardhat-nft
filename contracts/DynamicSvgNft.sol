@@ -2,22 +2,19 @@
 pragma solidity ^0.8.8;
 
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 import "base64-sol/base64.sol";
 
-contract DynamicSvgNft is ERC721 {
-    // mint
-    // Store the svg info somewhere
-    // Some logic to say "show X image" or "show Y image"
+error ERC721Metadata__URI_QueryFor_NonExistentToken();
 
+contract DynamicSvgNft is ERC721, Ownable {
     uint256 private s_tokenCounter;
-    string private i_lowImageUri;
-    string private i_highImageUri;
-    string private constant base64EncodedSvgPrefix =
-        "data:image/svg+xml;base64,";
-    AggregatorV3Interface internal immutable i_priceFeed;
-    mapping(uint256 => int256) public s_tokenIdToHighValue;
+    string private s_lowImageURI;
+    string private s_highImageURI;
 
+    mapping(uint256 => int256) private s_tokenIdToHighValues;
+    AggregatorV3Interface internal immutable i_priceFeed;
     event CreatedNFT(uint256 indexed tokenId, int256 highValue);
 
     constructor(
@@ -26,28 +23,29 @@ contract DynamicSvgNft is ERC721 {
         string memory highSvg
     ) ERC721("Dynamic SVG NFT", "DSN") {
         s_tokenCounter = 0;
-        i_lowImageUri = svgToImageUri(lowSvg);
-        i_highImageUri = svgToImageUri(highSvg);
         i_priceFeed = AggregatorV3Interface(priceFeedAddress);
+        s_lowImageURI = svgToImageURI(lowSvg);
+        s_highImageURI = svgToImageURI(highSvg);
     }
 
-    function svgToImageUri(string memory svg)
+    function mintNft(int256 highValue) public {
+        s_tokenIdToHighValues[s_tokenCounter] = highValue;
+        _safeMint(msg.sender, s_tokenCounter);
+        s_tokenCounter = s_tokenCounter + 1;
+        emit CreatedNFT(s_tokenCounter, highValue);
+    }
+
+    // You could also just upload the raw SVG and have solildity convert it!
+    function svgToImageURI(string memory svg)
         public
         pure
         returns (string memory)
     {
+        string memory baseURL = "data:image/svg+xml;base64,";
         string memory svgBase64Encoded = Base64.encode(
             bytes(string(abi.encodePacked(svg)))
         );
-        return
-            string(abi.encodePacked(base64EncodedSvgPrefix, svgBase64Encoded));
-    }
-
-    function mintNft(int256 highValue) public {
-        s_tokenIdToHighValue[s_tokenCounter] = highValue;
-        _safeMint(msg.sender, s_tokenCounter);
-        emit CreatedNFT(s_tokenCounter, highValue);
-        s_tokenCounter += 1;
+        return string(abi.encodePacked(baseURL, svgBase64Encoded));
     }
 
     function _baseURI() internal pure override returns (string memory) {
@@ -57,15 +55,17 @@ contract DynamicSvgNft is ERC721 {
     function tokenURI(uint256 tokenId)
         public
         view
+        virtual
         override
         returns (string memory)
     {
-        require(_exists(tokenId), "URI query for nonexistent tokenId");
-
+        if (!_exists(tokenId)) {
+            revert ERC721Metadata__URI_QueryFor_NonExistentToken();
+        }
         (, int256 price, , , ) = i_priceFeed.latestRoundData();
-        string memory imageURI = i_lowImageUri;
-        if (price > s_tokenIdToHighValue[tokenId]) {
-            imageURI = i_highImageUri;
+        string memory imageURI = s_lowImageURI;
+        if (price >= s_tokenIdToHighValues[tokenId]) {
+            imageURI = s_highImageURI;
         }
         return
             string(
@@ -75,15 +75,31 @@ contract DynamicSvgNft is ERC721 {
                         bytes(
                             abi.encodePacked(
                                 '{"name":"',
-                                name(),
-                                '", "description":"And NFT that changes based on the Chainlink Feed", ',
-                                '"attributes": [{"trait_type":"coolness", "value": 100}], "image":"',
+                                name(), // You can add whatever name here
+                                '", "description":"An NFT that changes based on the Chainlink Feed", ',
+                                '"attributes": [{"trait_type": "coolness", "value": 100}], "image":"',
                                 imageURI,
-                                '"}"'
+                                '"}'
                             )
                         )
                     )
                 )
             );
+    }
+
+    function getLowSVG() public view returns (string memory) {
+        return s_lowImageURI;
+    }
+
+    function getHighSVG() public view returns (string memory) {
+        return s_highImageURI;
+    }
+
+    function getPriceFeed() public view returns (AggregatorV3Interface) {
+        return i_priceFeed;
+    }
+
+    function getTokenCounter() public view returns (uint256) {
+        return s_tokenCounter;
     }
 }
